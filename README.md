@@ -11,7 +11,8 @@ Web panelinden birden fazla kanal ekleyebilir; her kanal için hedef grup, gönd
 - Birden fazla YouTube kanalı ve WhatsApp grubu desteği
 - Aynı kanal veya grubun birden fazla otomasyonda kullanılabilmesi
 - Kanal bazında anket veya normal mesaj gönderimi
-- Türkiye saatine göre saat ve dakika hassasiyetli çalışma aralığı
+- Türkiye saatine göre birden fazla saat ve dakika hassasiyetli çalışma aralığı
+- Aralık bazında 15 saniye veya 1 dakika kontrol sıklığı
 - Günlük tahmini YouTube API kullanım göstergesi
 - Tekrar gönderimi engelleyen MongoDB olay kaydı
 - Başarısız gönderimler için otomatik yeniden deneme
@@ -21,9 +22,9 @@ Web panelinden birden fazla kanal ekleyebilir; her kanal için hedef grup, gönd
 ## Nasıl çalışır?
 
 1. WhatsApp hesabı QR kod ile bağlanır.
-2. Bir YouTube kanalı, WhatsApp grubu ve kontrol aralığı seçilir.
-3. Bot, belirlenen zaman aralığında kanalı dakikada bir kontrol eder.
-4. Daha önce işlenmemiş bir video bulunduğunda seçilen gruba anket veya mesaj gönderilir.
+2. Bir YouTube kanalı, WhatsApp grubu ve bir veya daha fazla kontrol aralığı seçilir.
+3. Her aralık için 15 saniye veya 1 dakika kontrol sıklığı belirlenir; çakışmada hızlı olan sıklık tek kontrol olarak uygulanır.
+4. Son beş dakikada yayımlanmış, daha önce işlenmemiş bir video bulunduğunda seçilen gruba anket veya mesaj gönderilir. Daha eski sonuçlar iptal kaydı olarak tutulur.
 
 ## Gereksinimler
 
@@ -106,9 +107,9 @@ Site varsayılan olarak görüntüleme modunda açılır. İlk kurulumda:
 
 ## YouTube API kullanımı
 
-Bot, her etkin kanal için çalışma aralığında dakikada bir `playlistItems.list` isteği yapar. Panel, seçilen zaman aralıklarına göre günlük tahmini kullanımı hesaplar.
+Bot, her etkin kanal için çalışma aralıklarında seçilen sıklıkta `playlistItems.list` isteği yapar. Çakışan aralıklarda 15 saniyelik sıklık önceliklidir ve aynı anda ikinci istek yapılmaz. Panel, seçilen zaman aralıklarına göre günlük tahmini kullanımı hesaplar.
 
-Örnek: `08:00–20:59` aralığı günlük yaklaşık 780 istektir. Gösterilen sınır bilgilendirme amaçlıdır; aşılması ayarların kaydedilmesini engellemez.
+Örnek: `08:00–20:00` aralığı 1 dakikalık sıklıkla günlük 721 istektir. `14:59–15:02` aralığı 15 saniyelik, `15:02–15:15` aralığı 1 dakikalık seçildiğinde çakışma tekilleştirilir ve toplam 26 istek oluşur. Gösterilen sınır bilgilendirme amaçlıdır; aşılması ayarların kaydedilmesini engellemez.
 
 ## Komutlar
 

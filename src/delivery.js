@@ -1,6 +1,7 @@
 const { db, getSettings } = require('./db');
 const whatsapp = require('./whatsapp');
 const { getConfigKey } = require('./config');
+const { channelSchedules, isWithinAnySchedule } = require('./youtube-monitor');
 
 let running = false;
 let paused = false;
@@ -26,8 +27,29 @@ async function processNext() {
     if (!event) return;
     try {
       const settings = await getSettings();
-      const channel = settings?.channels?.find(item => item.automationId === event.automationId)
-        || settings?.channels?.find(item => item.id === event.channelId);
+      const channel = event.automationId
+        ? settings?.channels?.find(item => item.automationId === event.automationId)
+        : settings?.channels?.find(item => item.id === event.channelId);
+      if ((event.automationId && !channel) || channel?.enabled === false) {
+        await db().collection('video_events').updateOne(
+          { _id: event._id },
+          { $set: { status: 'cancelled', reason: channel ? 'channel-disabled' : 'channel-missing', cancelledAt: new Date() }, $unset: { nextAttemptAt: '', processingStartedAt: '', lastError: '' } }
+        );
+        return;
+      }
+      if (channel) {
+        const publishedAt = new Date(event.publishedAt);
+        const startedAt = new Date(channel.monitor?.startedAt);
+        const validPublishedAt = Number.isFinite(publishedAt.getTime());
+        const publishedAfterStart = !Number.isFinite(startedAt.getTime()) || publishedAt >= startedAt;
+        if (!validPublishedAt || !publishedAfterStart || !isWithinAnySchedule(channelSchedules(channel), publishedAt)) {
+          await db().collection('video_events').updateOne(
+            { _id: event._id },
+            { $set: { status: 'cancelled', reason: 'outside-publishing-window', cancelledAt: new Date() }, $unset: { nextAttemptAt: '', processingStartedAt: '', lastError: '' } }
+          );
+          return;
+        }
+      }
       const targetGroupId = event.targetGroupId || channel?.targetGroupId || settings?.targetGroupId;
       if (!targetGroupId) throw new Error('Hedef WhatsApp grubu seçilmedi.');
       const deliveryType = (event.deliveryType || channel?.deliveryType || settings?.deliveryType) === 'message' ? 'message' : 'poll';
@@ -67,10 +89,12 @@ async function waitForIdle() {
   await new Promise(resolve => idleWaiters.add(resolve));
 }
 
-async function cancelOutstanding(reason = 'settings-reset') {
+async function cancelOutstanding(reason = 'settings-reset', automationId = null) {
   await waitForIdle();
+  const filter = { configKey: getConfigKey(), status: { $in: ['pending', 'failed', 'sending'] } };
+  if (automationId) filter.automationId = automationId;
   return db().collection('video_events').updateMany(
-    { configKey: getConfigKey(), status: { $in: ['pending', 'failed', 'sending'] } },
+    filter,
     {
       $set: { status: 'cancelled', reason, cancelledAt: new Date() },
       $unset: { nextAttemptAt: '', processingStartedAt: '', lastError: '' }

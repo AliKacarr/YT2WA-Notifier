@@ -29,7 +29,7 @@ function legacyChannel(settings) {
       lastCheckedAt: settings.monitor?.lastCheckedAt || null,
       lastCheckedCount: settings.monitor?.lastCheckedCount || 0,
       lastError: settings.monitor?.lastError || null,
-      schedule: settings.monitor?.schedule || { intervalMinutes: 1, startHour: 0, startMinute: 0, endHour: 23, endMinute: 59 }
+      schedules: [{ ...(settings.monitor?.schedule || { startHour: 0, startMinute: 0, endHour: 23, endMinute: 59 }), intervalSeconds: 60 }]
     }
   };
 }
@@ -90,8 +90,24 @@ async function connectDatabase() {
   if (!Array.isArray(current?.channels)) {
     const migrated = legacyChannel(current);
     await settings.updateOne({ _id: configKey }, { $set: { channels: migrated ? [migrated] : [], updatedAt: new Date() } });
-  } else if (current.channels.some(channel => !channel.automationId)) {
-    const channels = current.channels.map(channel => ({ ...channel, automationId: channel.automationId || randomUUID() }));
+  } else if (current.channels.some(channel => !channel.automationId || !Array.isArray(channel.monitor?.schedules) || !channel.monitor?.acceptVideosAfter)) {
+    const channels = current.channels.map(channel => {
+      const monitor = channel.monitor || {};
+      const source = Array.isArray(monitor.schedules) && monitor.schedules.length ? monitor.schedules : [monitor.schedule || { startHour: 0, startMinute: 0, endHour: 23, endMinute: 59 }];
+      const schedules = source.map(item => ({
+        intervalSeconds: [15, 60].includes(Number(item.intervalSeconds)) ? Number(item.intervalSeconds) : 60,
+        startHour: Number(item.startHour ?? 0),
+        startMinute: Number(item.startMinute ?? 0),
+        endHour: Number(item.endHour ?? 23),
+        endMinute: Number(item.endMinute ?? 59)
+      }));
+      const { schedule: legacySchedule, ...monitorFields } = monitor;
+      return {
+        ...channel,
+        automationId: channel.automationId || randomUUID(),
+        monitor: { ...monitorFields, schedules, acceptVideosAfter: monitor.acceptVideosAfter || monitor.lastCheckedAt || monitor.startedAt || new Date() }
+      };
+    });
     await settings.updateOne({ _id: configKey }, { $set: { channels, updatedAt: new Date() } });
   }
   console.log(`MongoDB bağlantısı hazır: ${dbName}`);
@@ -116,6 +132,38 @@ async function updateSettings(update) {
   return getSettings();
 }
 
+async function appendChannel(channel) {
+  const result = await db().collection('app_settings').updateOne(
+    { _id: getConfigKey() },
+    { $push: { channels: channel }, $set: { updatedAt: new Date() } }
+  );
+  if (!result.matchedCount) throw new Error('Uygulama ayarları bulunamadı.');
+  return getSettings();
+}
+
+async function updateChannelFields(automationId, fields, { unset = {}, expected = {} } = {}) {
+  const channelMatch = { automationId, ...expected };
+  const $set = { updatedAt: new Date() };
+  const $unset = {};
+  for (const [path, value] of Object.entries(fields)) $set[`channels.$.${path}`] = value;
+  for (const path of Object.keys(unset)) $unset[`channels.$.${path}`] = '';
+  const update = { $set };
+  if (Object.keys($unset).length) update.$unset = $unset;
+  const result = await db().collection('app_settings').updateOne(
+    { _id: getConfigKey(), channels: { $elemMatch: channelMatch } },
+    update
+  );
+  return { matched: result.matchedCount > 0, settings: await getSettings() };
+}
+
+async function removeChannel(automationId) {
+  const result = await db().collection('app_settings').updateOne(
+    { _id: getConfigKey(), 'channels.automationId': automationId },
+    { $pull: { channels: { automationId } }, $set: { updatedAt: new Date() } }
+  );
+  return { removed: result.modifiedCount > 0, settings: await getSettings() };
+}
+
 async function resetSettings() {
   const now = new Date();
   const configKey = getConfigKey();
@@ -131,4 +179,4 @@ async function closeDatabase() {
   if (client) await client.close();
 }
 
-module.exports = { connectDatabase, closeDatabase, db, getSettings, updateSettings, resetSettings };
+module.exports = { connectDatabase, closeDatabase, db, getSettings, updateSettings, appendChannel, updateChannelFields, removeChannel, resetSettings };

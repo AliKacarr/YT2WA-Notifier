@@ -36,7 +36,7 @@
         <div class="card-head"><span class="info-icon" aria-hidden="true"><i class="fas fa-info"></i></span><div><h2>Günlük YouTube API kullanımı</h2><p>Etkin kanalların tahmini YouTube istekleri.</p></div></div>
         <strong id="quotaValue">0/1000</strong>
         <div class="quota-track"><span id="quotaBar"></span></div>
-        <p id="quotaText" class="micro">Her kanal, etkin olduğu her dakika için bir istek kullanır.</p>
+        <p id="quotaText" class="micro">Kullanım, seçilen kontrol aralıkları ve sıklıklara göre hesaplanır.</p>
       </article>
     </section>
 
@@ -75,13 +75,15 @@
       <div class="modal-head"><div><p class="eyebrow">KANAL OTOMASYONU</p><h2 id="modalTitle">Yeni kanal ekle</h2></div><button type="button" id="closeModalButton" class="icon-button" aria-label="Kapat">×</button></div>
       <input type="hidden" id="editingChannelId">
       <label for="channelInput">YouTube kanalı</label><input id="channelInput" placeholder="örnek: https://www.youtube.com/@hisarkapisi" required>
-      <label for="groupSelect">WhatsApp grubu</label><select id="groupSelect" required></select>
-      <label for="deliveryType">Gönderim biçimi</label><select id="deliveryType"><option value="poll">Anket</option><option value="message">Mesaj</option></select>
-      <div class="schedule-grid">
-        <div><label for="startHour">Başlangıç</label><div class="time-selects"><select id="startHour" aria-label="Başlangıç saati"></select><span>:</span><select id="startMinute" aria-label="Başlangıç dakikası"></select></div></div>
-        <div><label for="endHour">Bitiş</label><div class="time-selects"><select id="endHour" aria-label="Bitiş saati"></select><span>:</span><select id="endMinute" aria-label="Bitiş dakikası"></select></div></div>
+      <label for="groupSelect">WhatsApp grubu</label>
+      <div class="group-combobox">
+        <input id="groupSelect" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="groupOptions" autocomplete="off" placeholder="Hedef WhatsApp grubunu seçin" required>
+        <div id="groupOptions" class="combobox-options hidden" role="listbox"></div>
       </div>
-      <p class="micro">Saatler Türkiye saatine (GMT+3) göre uygulanır; bitiş saati başlangıçtan küçükse kontrol gece yarısını geçerek sürer.</p>
+      <label for="deliveryType">Gönderim biçimi</label><select id="deliveryType"><option value="poll">Anket</option><option value="message" selected>Mesaj</option></select>
+      <div class="schedule-editor-head"><label>Kontrol zamanları</label><button type="button" id="addScheduleButton" class="secondary">+ Aralık ekle</button></div>
+      <div id="scheduleList" class="schedule-list"></div>
+      <p class="micro">Saatler Türkiye saatine (GMT+3) göre uygulanır. Çakışan aralıklarda en hızlı sıklık kullanılır ve tek kontrol yapılır.</p>
       <p id="formEstimate" class="estimate"></p>
       <label id="enabledWrap" class="check hidden"><input id="channelEnabled" type="checkbox" checked> Otomasyon etkin</label>
       <button id="saveChannelButton" class="full" type="submit">Kanalı kaydet</button>

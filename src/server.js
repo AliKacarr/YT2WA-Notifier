@@ -32,7 +32,7 @@ for (const stream of [process.stdout, process.stderr]) {
 const path = require('path');
 const express = require('express');
 const schedule = require('node-schedule');
-const { connectDatabase, closeDatabase, db, getSettings, updateSettings, resetSettings } = require('./db');
+const { connectDatabase, closeDatabase, db, getSettings, updateChannelFields, removeChannel, resetSettings } = require('./db');
 const { getConfigKey } = require('./config');
 const youtube = require('./youtube');
 const youtubeMonitor = require('./youtube-monitor');
@@ -148,7 +148,7 @@ app.post('/api/channels', auth.requireAdmin, async (req, res, next) => {
     const deliveryType = String(req.body.deliveryType || 'poll');
     if (!['poll', 'message'].includes(deliveryType)) throw new Error('Gönderim biçimi anket veya mesaj olmalıdır.');
     const channel = await youtube.resolveChannel(req.body.input);
-    const result = await youtubeMonitor.addChannel(channel, { targetGroupId: group.id, targetGroupName: group.name, deliveryType, schedule: req.body.schedule });
+    const result = await youtubeMonitor.addChannel(channel, { targetGroupId: group.id, targetGroupName: group.name, deliveryType, schedules: req.body.schedules || req.body.schedule });
     res.status(201).json({ ok: true, ...result });
   } catch (error) { next(error); }
 });
@@ -165,22 +165,38 @@ app.put('/api/channels/:automationId', auth.requireAdmin, async (req, res, next)
     if (index < 0) throw new Error('YouTube kanalı bulunamadı.');
     const deliveryType = String(req.body.deliveryType || 'poll');
     if (!['poll', 'message'].includes(deliveryType)) throw new Error('Gönderim biçimi anket veya mesaj olmalıdır.');
-    const updated = { ...settings.channels[index], targetGroupId: group.id, targetGroupName: group.name, deliveryType, enabled: req.body.enabled !== false, monitor: { ...settings.channels[index].monitor, schedule: youtubeMonitor.normalizeSchedule(req.body.schedule) } };
-    const channels = [...settings.channels];
-    channels[index] = updated;
-    const quota = youtubeMonitor.quotaSummary(channels);
-    await updateSettings({ channels });
+    const previous = settings.channels[index];
+    const schedules = youtubeMonitor.normalizeSchedules(req.body.schedules || req.body.schedule || youtubeMonitor.channelSchedules(previous));
+    const previousSchedules = youtubeMonitor.channelSchedules(previous);
+    const scheduleChanged = JSON.stringify(previousSchedules) !== JSON.stringify(schedules);
+    const enabled = req.body.enabled !== false;
+    const monitorReset = scheduleChanged || (previous.enabled === false && enabled);
+    const fields = {
+      targetGroupId: group.id,
+      targetGroupName: group.name,
+      deliveryType,
+      enabled,
+      'monitor.schedules': schedules
+    };
+    if (monitorReset) {
+      fields['monitor.acceptVideosAfter'] = new Date();
+      fields['monitor.lastCheckedAt'] = null;
+    }
+    const result = await updateChannelFields(req.params.automationId, fields, { unset: { 'monitor.schedule': '' } });
+    if (!result.matched) throw new Error('YouTube kanalı bulunamadı.');
+    if (!enabled) await delivery.cancelOutstanding('channel-disabled', req.params.automationId);
+    const updated = result.settings.channels.find(item => item.automationId === req.params.automationId);
+    const quota = youtubeMonitor.quotaSummary(result.settings.channels || []);
     res.json({ ok: true, channel: updated, quota });
   } catch (error) { next(error); }
 });
 
 app.delete('/api/channels/:automationId', auth.requireAdmin, async (req, res, next) => {
   try {
-    const settings = await getSettings();
-    const channels = (settings?.channels || []).filter(item => item.automationId !== req.params.automationId);
-    if (channels.length === settings.channels.length) throw new Error('YouTube kanalı bulunamadı.');
-    await updateSettings({ channels });
-    res.json({ ok: true, quota: youtubeMonitor.quotaSummary(channels) });
+    const result = await removeChannel(req.params.automationId);
+    if (!result.removed) throw new Error('YouTube kanalı bulunamadı.');
+    await delivery.cancelOutstanding('channel-deleted', req.params.automationId);
+    res.json({ ok: true, quota: youtubeMonitor.quotaSummary(result.settings?.channels || []) });
   } catch (error) { next(error); }
 });
 
@@ -216,6 +232,7 @@ app.get('/api/events', async (req, res, next) => {
       videoUrl: event.videoUrl,
       targetGroupName: event.targetGroupName,
       status: event.status,
+      reason: event.reason,
       receivedAt: event.receivedAt
     }));
     res.json({ ok: true, events: visibleEvents, total, page });
@@ -237,9 +254,9 @@ function scheduleJobs() {
       } catch (error) { console.warn('Health self-ping hatası:', error.message); }
     });
   }
-  // Zamanlayıcı her dakika çalışır; her kanalın kayıtlı saat penceresi
+  // Zamanlayıcı 15 saniyede bir çalışır; kanalın etkin aralık ve sıklığı
   // reconcileChannels içinde uygulanır. videoId unique indeksi tekrar gönderimi önler.
-  schedule.scheduleJob('* * * * *', async () => {
+  schedule.scheduleJob('*/15 * * * * *', async () => {
     try {
       const result = await youtubeMonitor.reconcileChannels();
       if (result?.inserted) delivery.kick();
