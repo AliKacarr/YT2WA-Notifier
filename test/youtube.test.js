@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseChannelInput } = require('../src/youtube');
-const { normalizeSchedule, isWithinHours, activeIntervalSeconds, isDue, scheduleMinutes, dailyRequestCount, quotaSummary, classifyEntries, eligibleEntries } = require('../src/youtube-monitor');
+const { parseChannelInput, fetchLatestUploads } = require('../src/youtube');
+const { normalizeSchedule, isWithinHours, activeIntervalSeconds, isDue, isScheduledTick, scheduleMinutes, dailyRequestCount, quotaSummary, classifyEntries, eligibleEntries } = require('../src/youtube-monitor');
 
 test('YouTube handle URL ayrıştırılır', () => {
   assert.deepEqual(parseChannelInput('https://www.youtube.com/@hisarkapisi'), { type: 'handle', value: '@hisarkapisi' });
@@ -16,6 +16,26 @@ test('YouTube channel URL ayrıştırılır', () => {
     parseChannelInput('https://www.youtube.com/channel/UCb2NNTeDSPr2sFHrI2AwHTQ'),
     { type: 'id', value: 'UCb2NNTeDSPr2sFHrI2AwHTQ' }
   );
+});
+
+test('son yüklemeler varsayılan olarak en fazla 5 video ister', async () => {
+  const originalFetch = global.fetch;
+  const originalKey = process.env.YOUTUBE_API_KEY;
+  let requestedUrl;
+  process.env.YOUTUBE_API_KEY = 'test-key';
+  global.fetch = async url => {
+    requestedUrl = new URL(url);
+    return { ok: true, json: async () => ({ items: [] }) };
+  };
+
+  try {
+    await fetchLatestUploads('UCb2NNTeDSPr2sFHrI2AwHTQ');
+    assert.equal(requestedUrl.searchParams.get('maxResults'), '5');
+  } finally {
+    global.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.YOUTUBE_API_KEY;
+    else process.env.YOUTUBE_API_KEY = originalKey;
+  }
 });
 
 test('kontrol planı 15 saniye veya bir dakikalık sıklık ve geçerli saat sınırlarını kullanır', () => {
@@ -35,6 +55,13 @@ test('kontrol seçilen saniye sıklığında yapılır', () => {
   const now = new Date('2025-01-01T10:05:00Z');
   assert.equal(isDue(15, new Date('2025-01-01T10:04:45Z'), now), true);
   assert.equal(isDue(60, new Date('2025-01-01T10:04:01Z'), now), false);
+});
+
+test('sabit zaman slotları 15 saniye ve bir dakika için doğru seçilir', () => {
+  assert.equal(isScheduledTick(15, new Date('2025-01-01T10:00:30Z')), true);
+  assert.equal(isScheduledTick(15, new Date('2025-01-01T10:00:31Z')), false);
+  assert.equal(isScheduledTick(60, new Date('2025-01-01T10:00:00Z')), true);
+  assert.equal(isScheduledTick(60, new Date('2025-01-01T10:00:15Z')), false);
 });
 
 test('günlük istek tahmini gece yarısını aşan aralıkları doğru hesaplar', () => {

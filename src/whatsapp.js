@@ -178,13 +178,13 @@ async function groups() {
     .sort((a, b) => a.name.localeCompare(b.name, 'tr'));
 }
 
-async function sendVideoPoll({ groupId, videoUrl }) {
+async function sendVideoPoll({ groupId, videoUrl, messageId }) {
   if (!socket || state.status !== 'READY') throw new Error('WhatsApp istemcisi hazır değil.');
   const target = groupId;
   if (!target) throw new Error('Hedef WhatsApp grubu seçilmedi.');
   const sent = await socket.sendMessage(target, {
     poll: { name: videoUrl, values: ['İzledim', 'İzlemedim'], selectableCount: 1 }
-  });
+  }, messageId ? { messageId } : undefined);
   return { messageId: sent?.key?.id || null, groupId: target };
 }
 
@@ -196,11 +196,11 @@ function formatVideoMessage({ title, videoUrl }) {
   return `${cleanTitle}\n${cleanUrl}`;
 }
 
-async function sendVideoMessage({ groupId, title, videoUrl }) {
+async function sendVideoMessage({ groupId, title, videoUrl, messageId }) {
   if (!socket || state.status !== 'READY') throw new Error('WhatsApp istemcisi hazır değil.');
   const target = groupId;
   if (!target) throw new Error('Hedef WhatsApp grubu seçilmedi.');
-  const sent = await socket.sendMessage(target, { text: formatVideoMessage({ title, videoUrl }) });
+  const sent = await socket.sendMessage(target, { text: formatVideoMessage({ title, videoUrl }) }, messageId ? { messageId } : undefined);
   return { messageId: sent?.key?.id || null, groupId: target };
 }
 

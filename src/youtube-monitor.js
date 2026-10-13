@@ -63,6 +63,11 @@ function isDue(scheduleOrSeconds, lastCheckedAt, now = new Date()) {
   return !lastCheckedAt || now.getTime() - new Date(lastCheckedAt).getTime() >= intervalSeconds * 1000;
 }
 
+function isScheduledTick(intervalSeconds, scheduledAt = new Date()) {
+  const seconds = getIstanbulSecondOfDay(scheduledAt);
+  return seconds % intervalSeconds === 0;
+}
+
 function scheduleMinutes(schedule) {
   const { startHour, startMinute, endHour, endMinute } = normalizeSchedule({ ...schedule, intervalSeconds: 60 });
   const start = startHour * 60 + startMinute;
@@ -174,22 +179,21 @@ async function saveMonitorResult(channel, fields) {
   });
 }
 
-async function reconcileChannels() {
+async function reconcileChannels({ scheduledAt = null } = {}) {
   if (paused) return { skipped: 'paused' };
-  if (activeRuns > 0) return { skipped: 'running' };
   activeRuns += 1;
   try {
     const settings = await getSettings();
     const channels = settings?.channels || [];
-    let inserted = 0;
-    let cancelled = 0;
-    let checkedChannels = 0;
-    for (const channel of channels) {
+    const slot = scheduledAt ? new Date(scheduledAt) : null;
+    const results = await Promise.all(channels.map(async channel => {
       const checkStartedAt = new Date();
       const schedules = channelSchedules(channel);
-      const intervalSeconds = activeIntervalSeconds(schedules, checkStartedAt);
-      if (channel.enabled === false || !channel.targetGroupId || !intervalSeconds || !isDue(intervalSeconds, channel.monitor?.lastCheckedAt, checkStartedAt)) continue;
-      checkedChannels += 1;
+      const scheduleTime = slot || checkStartedAt;
+      const intervalSeconds = activeIntervalSeconds(schedules, scheduleTime);
+      if (channel.enabled === false || !channel.targetGroupId || !intervalSeconds || (slot && !isScheduledTick(intervalSeconds, slot))) {
+        return { checkedChannels: 0, inserted: 0, cancelled: 0 };
+      }
       try {
         const entries = await fetchLatestUploads(channel.id);
         const checkedAt = new Date();
@@ -203,19 +207,26 @@ async function reconcileChannels() {
         });
         // Kanal silinmiş veya kontrol sırasında zaman planı değiştirilmişse eski
         // yapılandırmaya göre bulunan sonuçları kuyruğa ekleme.
-        if (!monitorUpdate.matched) continue;
+        if (!monitorUpdate.matched) return { checkedChannels: 1, inserted: 0, cancelled: 0 };
         const currentChannel = monitorUpdate.settings?.channels?.find(item => item.automationId === channel.automationId);
-        if (!currentChannel || currentChannel.enabled === false) continue;
-        inserted += await storeEntries(classified.pending, currentChannel, 'pending', checkedAt);
-        cancelled += await storeEntries(classified.cancelled, currentChannel, 'cancelled', checkedAt);
+        if (!currentChannel || currentChannel.enabled === false) return { checkedChannels: 1, inserted: 0, cancelled: 0 };
+        const [inserted, cancelled] = await Promise.all([
+          storeEntries(classified.pending, currentChannel, 'pending', checkedAt),
+          storeEntries(classified.cancelled, currentChannel, 'cancelled', checkedAt)
+        ]);
+        return { checkedChannels: 1, inserted, cancelled };
       } catch (error) {
         const checkedAt = new Date();
         await saveMonitorResult(channel, {
           'monitor.lastCheckedAt': checkedAt,
           'monitor.lastError': error.message
         });
+        return { checkedChannels: 1, inserted: 0, cancelled: 0 };
       }
-    }
+    }));
+    const checkedChannels = results.reduce((sum, result) => sum + result.checkedChannels, 0);
+    const inserted = results.reduce((sum, result) => sum + result.inserted, 0);
+    const cancelled = results.reduce((sum, result) => sum + result.cancelled, 0);
     return { checkedChannels, inserted, cancelled, source: 'youtube-data-api' };
   } finally {
     activeRuns -= 1;
@@ -239,4 +250,4 @@ async function waitForIdle() {
   await new Promise(resolve => idleWaiters.add(resolve));
 }
 
-module.exports = { addChannel, reconcileChannels, normalizeSchedule, normalizeSchedules, channelSchedules, isWithinHours, isWithinAnySchedule, activeIntervalSeconds, isDue, scheduleMinutes, dailyRequestCount, quotaSummary, classifyEntries, eligibleEntries, pause, resume, waitForIdle };
+module.exports = { addChannel, reconcileChannels, normalizeSchedule, normalizeSchedules, channelSchedules, isWithinHours, isWithinAnySchedule, activeIntervalSeconds, isDue, isScheduledTick, scheduleMinutes, dailyRequestCount, quotaSummary, classifyEntries, eligibleEntries, pause, resume, waitForIdle };

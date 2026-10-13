@@ -14,8 +14,8 @@ Web panelinden birden fazla kanal ekleyebilir; her kanal için hedef grup, gönd
 - Türkiye saatine göre birden fazla saat ve dakika hassasiyetli çalışma aralığı
 - Aralık bazında 15 saniye veya 1 dakika kontrol sıklığı
 - Günlük tahmini YouTube API kullanım göstergesi
-- Tekrar gönderimi engelleyen MongoDB olay kaydı
-- Başarısız gönderimler için otomatik yeniden deneme
+- Tekrar gönderimi engelleyen MongoDB olay kaydı ve kararlı WhatsApp mesaj kimliği
+- WhatsApp hazır olana kadar güvenli bekletme; başlayan gönderimlerde çift mesajı önleyen at-most-once teslimat
 - QR kod ile WhatsApp bağlantısı
 - Şifre korumalı düzenleme modu ve salt-okunur ziyaretçi görünümü
 
@@ -25,6 +25,8 @@ Web panelinden birden fazla kanal ekleyebilir; her kanal için hedef grup, gönd
 2. Bir YouTube kanalı, WhatsApp grubu ve bir veya daha fazla kontrol aralığı seçilir.
 3. Her aralık için 15 saniye veya 1 dakika kontrol sıklığı belirlenir; çakışmada hızlı olan sıklık tek kontrol olarak uygulanır.
 4. Son beş dakikada yayımlanmış, daha önce işlenmemiş bir video bulunduğunda seçilen gruba anket veya mesaj gönderilir. Daha eski sonuçlar iptal kaydı olarak tutulur.
+
+Teslimat `at-most-once` çalışır: WhatsApp hazır değilse olay gönderilmeden bekletilir. Baileys gönderimi başladıktan sonra hata alınırsa sonuç belirsiz kabul edilir ve çift mesaj riskini önlemek için otomatik gönderim tekrarı yapılmaz; olay `failed` durumunda inceleme için saklanır.
 
 ## Gereksinimler
 
@@ -107,7 +109,7 @@ Site varsayılan olarak görüntüleme modunda açılır. İlk kurulumda:
 
 ## YouTube API kullanımı
 
-Bot, her etkin kanal için çalışma aralıklarında seçilen sıklıkta `playlistItems.list` isteği yapar. Çakışan aralıklarda 15 saniyelik sıklık önceliklidir ve aynı anda ikinci istek yapılmaz. Panel, seçilen zaman aralıklarına göre günlük tahmini kullanımı hesaplar.
+Bot, her etkin kanal için çalışma aralıklarında seçilen sıklıkta `playlistItems.list` isteği yapar. Kontroller 15 saniyelik sabit zaman slotlarına bağlıdır; yavaş bir yanıt sonraki slotu engellemez. Aynı videoyu gören örtüşen istekler MongoDB benzersiz indeksiyle tek olaya dönüştürülür ve yalnızca bu olay teslimat worker'ı tarafından atomik olarak sahiplenilir. Çakışan zaman aralıklarında 15 saniyelik sıklık önceliklidir. Panel, seçilen zaman aralıklarına göre günlük tahmini kullanımı hesaplar.
 
 Örnek: `08:00–20:00` aralığı 1 dakikalık sıklıkla günlük 721 istektir. `14:59–15:02` aralığı 15 saniyelik, `15:02–15:15` aralığı 1 dakikalık seçildiğinde çakışma tekilleştirilir ve toplam 26 istek oluşur. Gösterilen sınır bilgilendirme amaçlıdır; aşılması ayarların kaydedilmesini engellemez.
 

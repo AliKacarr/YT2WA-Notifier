@@ -18,7 +18,7 @@ function channel(automationId) {
   };
 }
 
-function loadMonitor({ channels, fetchLatestUploads, saveResult }) {
+function loadMonitor({ channels, fetchLatestUploads, saveResult, writeEvent }) {
   const dbPath = require.resolve('../src/db');
   const youtubePath = require.resolve('../src/youtube');
   const monitorPath = require.resolve('../src/youtube-monitor');
@@ -34,6 +34,7 @@ function loadMonitor({ channels, fetchLatestUploads, saveResult }) {
         collection: () => ({
           updateOne: async (...args) => {
             eventWrites.push(args);
+            if (writeEvent) return writeEvent(...args);
             return { upsertedCount: 1 };
           }
         })
@@ -58,7 +59,15 @@ function loadMonitor({ channels, fetchLatestUploads, saveResult }) {
   return { monitor: require(monitorPath), monitorUpdates, eventWrites };
 }
 
-test('her kanalın kontrol zamanı kendi API isteğinin tamamlandığı anda kaydedilir', async () => {
+async function waitUntil(predicate) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (predicate()) return;
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.fail('Beklenen eşzamanlı kontrol başlamadı.');
+}
+
+test('her kanalın kontrol tamamlanma zamanı kaydedilir', async () => {
   const channels = [channel('one'), channel('two')];
   const { monitor, monitorUpdates } = loadMonitor({
     channels,
@@ -72,7 +81,7 @@ test('her kanalın kontrol zamanı kendi API isteğinin tamamlandığı anda kay
 
   assert.equal(result.checkedChannels, 2);
   assert.equal(monitorUpdates.length, 2);
-  assert.ok(monitorUpdates[1].fields['monitor.lastCheckedAt'] > monitorUpdates[0].fields['monitor.lastCheckedAt']);
+  assert.ok(monitorUpdates.every(update => update.fields['monitor.lastCheckedAt'] instanceof Date));
 });
 
 test('video yaşı API isteğinin başlangıcına değil tamamlanma zamanına göre belirlenir', async () => {
@@ -126,4 +135,49 @@ test('kontrol sırasında kanal yapılandırması değişirse eski sonuca göre 
   assert.equal(result.inserted, 0);
   assert.equal(result.cancelled, 0);
   assert.equal(eventWrites.length, 0);
+});
+
+test('önceki istek bitmemiş olsa da sonraki 15 saniyelik slot başlatılır', async () => {
+  const releases = [];
+  let requestCount = 0;
+  const { monitor } = loadMonitor({
+    channels: [channel('fixed-slots')],
+    fetchLatestUploads: async () => {
+      requestCount += 1;
+      return new Promise(resolve => releases.push(() => resolve([])));
+    }
+  });
+
+  const first = monitor.reconcileChannels({ scheduledAt: new Date('2025-01-01T09:00:15Z') });
+  await waitUntil(() => requestCount === 1);
+  const second = monitor.reconcileChannels({ scheduledAt: new Date('2025-01-01T09:00:30Z') });
+  await waitUntil(() => requestCount === 2);
+
+  assert.equal(requestCount, 2);
+  releases.forEach(resolve => resolve());
+  await Promise.all([first, second]);
+});
+
+test('eşzamanlı kontroller aynı videoyu yalnızca bir kez kuyruğa ekler', async () => {
+  let insertAttempt = 0;
+  const publishedAt = new Date(Date.now() - 1000);
+  const { monitor, eventWrites } = loadMonitor({
+    channels: [channel('deduplicated')],
+    fetchLatestUploads: async () => [{ videoId: 'same-video', title: 'Video', publishedAt }],
+    writeEvent: async () => {
+      insertAttempt += 1;
+      if (insertAttempt === 1) return { upsertedCount: 1 };
+      const error = new Error('duplicate key');
+      error.code = 11000;
+      throw error;
+    }
+  });
+
+  const results = await Promise.all([
+    monitor.reconcileChannels({ scheduledAt: new Date('2025-01-01T09:00:15Z') }),
+    monitor.reconcileChannels({ scheduledAt: new Date('2025-01-01T09:00:30Z') })
+  ]);
+
+  assert.equal(eventWrites.length, 2);
+  assert.equal(results.reduce((sum, result) => sum + result.inserted, 0), 1);
 });

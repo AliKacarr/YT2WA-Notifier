@@ -29,7 +29,7 @@ async function resolveChannel(input) {
   url.searchParams.set('key', key);
   url.searchParams.set(parsed.type === 'handle' ? 'forHandle' : parsed.type === 'username' ? 'forUsername' : 'id', parsed.value);
 
-  const response = await fetch(url);
+  const response = await fetch(url, { signal: AbortSignal.timeout(12000) });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body?.error?.message || `YouTube API hatası (${response.status})`);
   const channel = body.items?.[0];
@@ -44,7 +44,7 @@ async function resolveChannel(input) {
   };
 }
 
-async function fetchLatestUploads(channelId, maxResults = 10) {
+async function fetchLatestUploads(channelId, maxResults = 5) {
   if (!CHANNEL_ID_PATTERN.test(channelId || '')) throw new Error('Ge\u00e7ersiz YouTube kanal kimli\u011fi.');
   const key = requireEnv('YOUTUBE_API_KEY');
   const uploadsPlaylistId = 'UU' + channelId.slice(2);
@@ -54,7 +54,7 @@ async function fetchLatestUploads(channelId, maxResults = 10) {
   url.searchParams.set('maxResults', String(maxResults));
   url.searchParams.set('key', key);
 
-  const response = await fetch(url);
+  const response = await fetch(url, { signal: AbortSignal.timeout(12000) });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body?.error?.message || 'YouTube video listesi al\u0131namad\u0131 (' + response.status + ')');
 

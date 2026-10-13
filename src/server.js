@@ -256,9 +256,11 @@ function scheduleJobs() {
   }
   // Zamanlayıcı 15 saniyede bir çalışır; kanalın etkin aralık ve sıklığı
   // reconcileChannels içinde uygulanır. videoId unique indeksi tekrar gönderimi önler.
-  schedule.scheduleJob('*/15 * * * * *', async () => {
+  schedule.scheduleJob('*/15 * * * * *', async fireDate => {
     try {
-      const result = await youtubeMonitor.reconcileChannels();
+      // Kararı callback'in gecikmiş olabileceği gerçek çalışma anına göre değil,
+      // node-schedule'ın hedeflediği sabit :00/:15/:30/:45 slotuna göre ver.
+      const result = await youtubeMonitor.reconcileChannels({ scheduledAt: fireDate });
       if (result?.inserted) delivery.kick();
     } catch (error) { console.warn('YouTube video kontrolü hatası:', error.message); }
   });
@@ -273,9 +275,6 @@ async function main() {
     console.log(`Sunucu 0.0.0.0:${port} üzerinde hazır.`);
     resolve();
   }));
-  youtubeMonitor.reconcileChannels()
-    .then(result => { if (result?.inserted) delivery.kick(); })
-    .catch(error => console.warn('YouTube başlangıç kontrolü başarısız:', error.message));
 }
 
 async function shutdown() {

@@ -3,21 +3,23 @@ const assert = require('node:assert/strict');
 
 process.env.CONFIG_KEY ||= 'test';
 
-function loadDelivery({ settings, event = null }) {
+function loadDelivery({ settings, event = null, whatsappStatus = 'READY', sendError = null }) {
   const dbPath = require.resolve('../src/db');
   const whatsappPath = require.resolve('../src/whatsapp');
   const deliveryPath = require.resolve('../src/delivery');
   const updateOneCalls = [];
   const updateManyCalls = [];
   const sendCalls = [];
+  const findOneAndUpdateCalls = [];
   let nextEvent = event;
   const collection = {
-    findOneAndUpdate: async () => {
+    findOneAndUpdate: async (...args) => {
+      findOneAndUpdateCalls.push(args);
       const result = nextEvent;
       nextEvent = null;
       return result;
     },
-    updateOne: async (...args) => { updateOneCalls.push(args); },
+    updateOne: async (...args) => { updateOneCalls.push(args); return { matchedCount: 1 }; },
     updateMany: async (...args) => { updateManyCalls.push(args); }
   };
 
@@ -32,16 +34,17 @@ function loadDelivery({ settings, event = null }) {
     filename: whatsappPath,
     loaded: true,
     exports: {
-      sendVideoPoll: async payload => { sendCalls.push(payload); return { groupId: settings?.targetGroupId, messageId: 'message-1' }; },
-      sendVideoMessage: async payload => { sendCalls.push(payload); return { groupId: settings?.targetGroupId, messageId: 'message-1' }; }
+      getState: () => ({ status: whatsappStatus }),
+      sendVideoPoll: async payload => { sendCalls.push(payload); if (sendError) throw sendError; return { groupId: settings?.targetGroupId, messageId: 'message-1' }; },
+      sendVideoMessage: async payload => { sendCalls.push(payload); if (sendError) throw sendError; return { groupId: settings?.targetGroupId, messageId: 'message-1' }; }
     }
   };
   delete require.cache[deliveryPath];
 
-  return { delivery: require(deliveryPath), updateOneCalls, updateManyCalls, sendCalls };
+  return { delivery: require(deliveryPath), updateOneCalls, updateManyCalls, sendCalls, findOneAndUpdateCalls };
 }
 
-test('hedef grup yoksa alınan olay yeniden denenecek şekilde failed yapılır', async () => {
+test('hedef grup yoksa olay otomatik tekrar olmadan failed yapılır', async () => {
   const { delivery, updateOneCalls } = loadDelivery({
     settings: { targetGroupId: null },
     event: { _id: 'event-1', attemptCount: 0, videoUrl: 'https://youtube.com/watch?v=test' }
@@ -53,6 +56,7 @@ test('hedef grup yoksa alınan olay yeniden denenecek şekilde failed yapılır'
   assert.equal(updateOneCalls[0][1].$set.status, 'failed');
   assert.match(updateOneCalls[0][1].$set.lastError, /Hedef WhatsApp grubu/);
   assert.equal(updateOneCalls[0][1].$unset.processingStartedAt, '');
+  assert.equal(updateOneCalls[0][1].$unset.nextAttemptAt, '');
 });
 
 test('ayarlar sıfırlanırken bekleyen teslimatlar silinmeden iptal edilir', async () => {
@@ -166,4 +170,87 @@ test('eşzamanlı worker tetikleri aynı videoyu yalnızca bir kez gönderir', a
   await Promise.all([delivery.processNext(), delivery.processNext(), delivery.processNext()]);
 
   assert.equal(sendCalls.length, 1);
+  assert.match(sendCalls[0].messageId, /^3EB0[A-F0-9]{18}$/);
+});
+
+test('aynı kuyruk olayı için kararlı WhatsApp mesaj kimliği üretilir', () => {
+  const { delivery } = loadDelivery({ settings: {} });
+  const event = { _id: 'stable-event-id' };
+
+  assert.equal(
+    delivery.deliveryMessageId(event, 'group@g.us', 'message'),
+    delivery.deliveryMessageId(event, 'group@g.us', 'message')
+  );
+  assert.notEqual(
+    delivery.deliveryMessageId(event, 'group@g.us', 'message'),
+    delivery.deliveryMessageId({ _id: 'another-event-id' }, 'group@g.us', 'message')
+  );
+});
+
+test('WhatsApp hazır değilken olay gönderilmeden pending durumuna bırakılır', async () => {
+  const publishedAt = new Date('2025-01-01T09:00:00Z');
+  const settings = {
+    channels: [{
+      automationId: 'automation-1',
+      targetGroupId: 'group@g.us',
+      deliveryType: 'message',
+      monitor: {
+        startedAt: new Date('2025-01-01T08:00:00Z'),
+        schedules: [{ intervalSeconds: 15, startHour: 0, startMinute: 0, endHour: 23, endMinute: 59 }]
+      }
+    }]
+  };
+  const { delivery, updateOneCalls, sendCalls } = loadDelivery({
+    settings,
+    whatsappStatus: 'DISCONNECTED',
+    event: {
+      _id: 'waiting-event', automationId: 'automation-1', publishedAt,
+      videoUrl: 'https://youtube.com/watch?v=waiting', targetGroupId: 'group@g.us'
+    }
+  });
+
+  await delivery.processNext();
+
+  assert.equal(sendCalls.length, 0);
+  assert.equal(updateOneCalls[0][1].$set.status, 'pending');
+  assert.ok(updateOneCalls[0][1].$set.nextAttemptAt instanceof Date);
+});
+
+test('başlayan gönderim hata verirse terminal failed olur ve tekrar seçilmez', async () => {
+  const publishedAt = new Date('2025-01-01T09:00:00Z');
+  const settings = {
+    channels: [{
+      automationId: 'automation-1', targetGroupId: 'group@g.us', deliveryType: 'message',
+      monitor: {
+        startedAt: new Date('2025-01-01T08:00:00Z'),
+        schedules: [{ intervalSeconds: 15, startHour: 0, startMinute: 0, endHour: 23, endMinute: 59 }]
+      }
+    }]
+  };
+  const { delivery, updateOneCalls, sendCalls, findOneAndUpdateCalls } = loadDelivery({
+    settings,
+    sendError: new Error('ACK alınamadı'),
+    event: {
+      _id: 'uncertain-event', automationId: 'automation-1', publishedAt,
+      videoUrl: 'https://youtube.com/watch?v=uncertain', targetGroupId: 'group@g.us'
+    }
+  });
+
+  await delivery.processNext();
+
+  assert.equal(sendCalls.length, 1);
+  assert.equal(findOneAndUpdateCalls[0][0].status, 'pending');
+  assert.equal(updateOneCalls.at(-1)[1].$set.status, 'failed');
+  assert.equal(updateOneCalls.at(-1)[1].$unset.nextAttemptAt, '');
+});
+
+test('yarım kalan sending olayı başlangıçta tekrar gönderilmeden failed yapılır', async () => {
+  const { delivery, updateManyCalls } = loadDelivery({ settings: {} });
+
+  await delivery.recoverInterrupted();
+
+  assert.equal(updateManyCalls[0][0].status, 'sending');
+  assert.equal(updateManyCalls[0][0].processingStartedAt, undefined);
+  assert.equal(updateManyCalls[0][1].$set.status, 'failed');
+  assert.equal(updateManyCalls[0][1].$unset.nextAttemptAt, '');
 });
