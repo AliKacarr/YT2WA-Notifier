@@ -2,12 +2,14 @@ require('dotenv').config();
 
 // Baileys/libsignal bazen yeniden bağlantı sırasında artık geçerli olmayan eski
 // mesaj oturumlarını çözmeye çalışır ve uygulamanın çalışmasını etkilemeyen uzun
-// Bad MAC stack trace'leri basar. Yalnızca bu bilinen gürültüyü sustururuz;
+// Bad MAC stack trace'leri veya kapatılmış oturum ayrıntıları basar. Yalnızca bu
+// bilinen gürültüyü (anahtar materyali içeren çıktılar dahil) sustururuz;
 // diğer stdout/stderr hata ve uyarıları görünmeye devam eder.
 const ignoredSignalLogFragments = [
   'Failed to decrypt message with any known session',
   'Session error:Error: Bad MAC',
   'Bad MAC Error: Bad MAC',
+  'Removing old closed session:',
   'Closing open session',
   'Closing session: SessionEntry',
   'Object.verifyMAC',
