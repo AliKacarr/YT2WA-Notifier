@@ -1,0 +1,39 @@
+diff --git a/node_modules/@whiskeysockets/baileys/lib/Socket/messages-recv.js b/node_modules/@whiskeysockets/baileys/lib/Socket/messages-recv.js
+index c46b096..c676b76 100644
+--- a/node_modules/@whiskeysockets/baileys/lib/Socket/messages-recv.js
++++ b/node_modules/@whiskeysockets/baileys/lib/Socket/messages-recv.js
+@@ -652,19 +652,24 @@ export const makeMessagesRecvSocket = (config) => {
+                         if (msg?.messageStubParameters?.[0] === MISSING_KEYS_ERROR_TEXT) {
+                             return sendMessageAck(node, NACK_REASONS.ParsingError);
+                         }
+-                        retryMutex.mutex(async () => {
+-                            if (ws.isOpen) {
+-                                if (getBinaryNodeChild(node, 'unavailable')) {
+-                                    return;
++                        await retryMutex.mutex(async () => {
++                            try {
++                                if (ws.isOpen) {
++                                    if (getBinaryNodeChild(node, 'unavailable')) {
++                                        return;
++                                    }
++                                    const encNode = getBinaryNodeChild(node, 'enc');
++                                    await sendRetryRequest(node, !encNode);
++                                    if (retryRequestDelayMs) {
++                                        await delay(retryRequestDelayMs);
++                                    }
+                                 }
+-                                const encNode = getBinaryNodeChild(node, 'enc');
+-                                await sendRetryRequest(node, !encNode);
+-                                if (retryRequestDelayMs) {
+-                                    await delay(retryRequestDelayMs);
++                                else {
++                                    logger.debug({ node }, 'connection closed, ignoring retry req');
+                                 }
+                             }
+-                            else {
+-                                logger.debug({ node }, 'connection closed, ignoring retry req');
++                            catch (error) {
++                                logger.error({ error }, 'failed to send retry request');
+                             }
+                         });
+                     }

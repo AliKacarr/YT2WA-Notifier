@@ -7,17 +7,19 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "postinstall": "patch-package"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.22",
+    "@whiskeysockets/baileys": "6.7.24",
     "dotenv": "^16.5.0",
     "express": "^4.21.2",
     "mongodb": "^6.21.0",
     "node-schedule": "^2.1.1",
+    "patch-package": "^8.0.1",
     "pino": "^9.7.0",
     "qrcode": "^1.5.4"
   },

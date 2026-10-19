@@ -105,6 +105,60 @@ function scheduleReconnect() {
   }), 3000);
 }
 
+function reportSocketEventError(client, eventName, error) {
+  console.warn(`WhatsApp ${eventName} işleyicisi başarısız:`, error?.message || error);
+  if (socket === client) state.lastError = error?.message || String(error);
+}
+
+function runSocketEvent(client, eventName, handler) {
+  // EventEmitter async callback'leri beklemez. Promise zincirini burada daima
+  // sonlandırarak handler hatalarının unhandled rejection olmasını önleriz.
+  return Promise.resolve()
+    .then(handler)
+    .catch(error => reportSocketEventError(client, eventName, error));
+}
+
+async function handleConnectionUpdate(client, update) {
+  // Kapanan eski bir socket'in gecikmiş event'i yeni bağlantının ortak state'ini
+  // sıfırlamamalı veya gereksiz bir yeniden bağlantı başlatmamalı.
+  if (socket !== client) return;
+
+  const { connection, lastDisconnect, qr } = update;
+  if (qr) {
+    const qrDataUrl = await QRCode.toDataURL(qr, { margin: 2, scale: 8 });
+    // QR üretimi async olduğu için bu sırada socket değişmiş veya açılmış olabilir.
+    if (socket === client && state.status !== 'READY') {
+      state.status = 'WAITING_FOR_QR';
+      state.qrDataUrl = qrDataUrl;
+    }
+  }
+  if (connection === 'open' && socket === client) {
+    state.status = 'READY';
+    state.qrDataUrl = null;
+    state.connectedAt = new Date();
+    state.userInfo = { id: client.user?.id || null, name: client.user?.name || client.user?.notify || 'WhatsApp' };
+    console.log(`WhatsApp bağlantısı hazır: ${state.userInfo.name}`);
+  }
+  if (connection === 'close' && socket === client) {
+    const statusCode = lastDisconnect?.error?.output?.statusCode;
+    const loggedOut = statusCode === DisconnectReason.loggedOut;
+    state.status = loggedOut ? 'LOGGED_OUT' : 'DISCONNECTED';
+    state.qrDataUrl = null;
+    state.lastError = lastDisconnect?.error?.message || null;
+    socket = null;
+    if (loggedOut) {
+      try {
+        await db().collection(authCollectionName()).deleteMany({});
+      } catch (error) {
+        state.lastError = error?.message || String(error);
+        console.warn('WhatsApp çıkış oturumu temizlenemedi:', state.lastError);
+      }
+    }
+    // Silme sürerken elle yeni bir bağlantı açıldıysa onun timer'ını bozma.
+    if (!socket) scheduleReconnect();
+  }
+}
+
 async function start(onlyIfSessionExists = false) {
   if (starting) return starting;
   if (socket && ['INITIALIZING', 'WAITING_FOR_QR', 'READY'].includes(state.status)) return socket;
@@ -117,7 +171,7 @@ async function start(onlyIfSessionExists = false) {
     state.lastError = null;
     const auth = await useMongoAuthState();
     const { version } = await fetchLatestWaWebVersion().catch(() => ({ version: [2, 3000, 1015901307] }));
-    socket = makeWASocket({
+    const client = makeWASocket({
       version,
       auth: auth.state,
       logger: pino({ level: 'silent' }),
@@ -129,43 +183,30 @@ async function start(onlyIfSessionExists = false) {
       syncFullHistory: false,
       markOnlineOnConnect: false
     });
+    socket = client;
 
-    socket.ev.on('creds.update', auth.saveCreds);
-    socket.ev.on('connection.update', async update => {
-      const { connection, lastDisconnect, qr } = update;
-      if (qr) {
-        state.status = 'WAITING_FOR_QR';
-        state.qrDataUrl = await QRCode.toDataURL(qr, { margin: 2, scale: 8 });
-      }
-      if (connection === 'open') {
-        state.status = 'READY';
-        state.qrDataUrl = null;
-        state.connectedAt = new Date();
-        state.userInfo = { id: socket.user?.id || null, name: socket.user?.name || socket.user?.notify || 'WhatsApp' };
-        console.log(`WhatsApp bağlantısı hazır: ${state.userInfo.name}`);
-      }
-      if (connection === 'close') {
-        const statusCode = lastDisconnect?.error?.output?.statusCode;
-        const loggedOut = statusCode === DisconnectReason.loggedOut;
-        state.status = loggedOut ? 'LOGGED_OUT' : 'DISCONNECTED';
-        state.qrDataUrl = null;
-        state.lastError = lastDisconnect?.error?.message || null;
-        socket = null;
-        if (loggedOut) await db().collection(authCollectionName()).deleteMany({});
-        scheduleReconnect();
-      }
+    client.ev.on('creds.update', () => {
+      if (socket !== client) return;
+      runSocketEvent(client, 'creds.update', auth.saveCreds);
     });
-    return socket;
+    client.ev.on('connection.update', update => {
+      runSocketEvent(client, 'connection.update', () => handleConnectionUpdate(client, update));
+    });
+    return client;
   })().finally(() => { starting = null; });
   return starting;
 }
 
 async function logout() {
   clearTimeout(reconnectTimer);
-  if (socket) {
-    try { await socket.logout(); } catch { try { socket.end(new Error('Manual logout')); } catch {} }
-  }
+  reconnectTimer = null;
+  const client = socket;
+  // logout() bir close event'i yayınlarsa eski handler'ın reconnect/state
+  // değişikliği yapmasını, socket'i önceden geçersiz kılarak engelle.
   socket = null;
+  if (client) {
+    try { await client.logout(); } catch { try { client.end(new Error('Manual logout')); } catch {} }
+  }
   await db().collection(authCollectionName()).deleteMany({});
   Object.assign(state, { status: 'DISCONNECTED', qrDataUrl: null, userInfo: null, lastError: null, connectedAt: null });
   return start(false);
@@ -208,4 +249,4 @@ function getState() {
   return { ...state, qrDataUrl: state.qrDataUrl };
 }
 
-module.exports = { start, logout, groups, sendVideoPoll, sendVideoMessage, formatVideoMessage, getState };
+module.exports = { start, logout, groups, sendVideoPoll, sendVideoMessage, formatVideoMessage, getState, runSocketEvent };
